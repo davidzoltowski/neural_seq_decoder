@@ -1,7 +1,6 @@
 import os
 import pickle
 import time
-import wandb
 
 from edit_distance import SequenceMatcher
 import hydra
@@ -61,12 +60,6 @@ def trainModel(args):
     torch.manual_seed(args["seed"])
     np.random.seed(args["seed"])
     device = "cuda"
-    
-    if args["USE_WANDB"]:
-        # Make wandb config dictionary
-        wandb.init(project=args["wandb_project"], job_type='model_training', config=args, entity=args["wandb_entity"])
-    else:
-        wandb.init(mode='offline')
 
     with open(args["outputDir"] + "/args", "wb") as file:
         pickle.dump(args, file)
@@ -91,6 +84,7 @@ def trainModel(args):
         strideLen=args["strideLen"],
         kernelLen=args["kernelLen"],
         gaussianSmoothWidth=args["gaussianSmoothWidth"],
+        bidirectional_input=args['bidirectional_input'],
         bidirectional=args["bidirectional"],
     ).to(device)
 
@@ -99,23 +93,23 @@ def trainModel(args):
         model.parameters(),
         lr=args["lrStart"],
         betas=(0.9, args['adamBeta2']),
-        eps=0.1,
+        eps=args['adamEPS'],
         weight_decay=args["l2_decay"],
     )
-    # scheduler = torch.optim.lr_scheduler.LinearLR(
-    #     optimizer,
-    #     start_factor=1.0,
-    #     end_factor=args["lrEnd"] / args["lrStart"],
-    #     total_iters=args["nBatch"],
-    # )
-
-    # warmup learning rate for nWarmup iters (min = 1)
-    scheduler1 = torch.optim.lr_scheduler.LinearLR(
+    scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer,
-        start_factor=1.0 / args["nWarmup"],
-        end_factor=1.0,
-        total_iters=args["nWarmup"],
+        start_factor=1.0,
+        end_factor=args["lrEnd"] / args["lrStart"],
+        total_iters=1000, #args["nBatch"],
     )
+
+    # # warmup learning rate for nWarmup iters (min = 1)
+    # scheduler1 = torch.optim.lr_scheduler.LinearLR(
+    #     optimizer,
+    #     start_factor=1.0 / args["nWarmup"],
+    #     end_factor=1.0,
+    #     total_iters=args["nWarmup"],
+    # )
     # if args['cosine_anneal']:
     #     scheduler2 = torch.optim.lr_scheduler.CosineAnnealingLR(
     #         optimizer,
@@ -128,29 +122,20 @@ def trainModel(args):
     #         start_factor=1.0,
     #         end_factor=args["lrEnd"] / args["lrStart"],
     #         total_iters=args["nBatch"] - args['nWarmup'],
-    #    )
+    #     )
 
-    scheduler2 = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1.0,
-        end_factor=args["lrEnd"] / args["lrStart"],
-        total_iters=args["nBatch"] - args['nWarmup'],
-   )
-    
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer, 
-        schedulers=[scheduler1, scheduler2], 
-        milestones=[args["nWarmup"]]
-    )
+    # scheduler = torch.optim.lr_scheduler.SequentialLR(
+    #     optimizer, 
+    #     schedulers=[scheduler1, scheduler2], 
+    #     milestones=[args["nWarmup"]]
+    # )
 
 
     # --train--
+    trainLoss = []
+    trainCER = []
     testLoss = []
     testCER = []
-    early_end = 0
-    best_train_loss = 0.0
-    best_train_CER = 1.0
-    best_batch = 0
     startTime = time.time()
     for batch in range(args["nBatch"]):
         model.train()
@@ -163,6 +148,24 @@ def trainModel(args):
             y_len.to(device),
             dayIdx.to(device),
         )
+
+        if args["speckled_mask_p"] > 0:
+            if batch == 0:
+                print(f'using speckled masking = {args["speckled_mask_p"]}...')
+            mask_p = args["speckled_mask_p"]
+            n_batches = X.shape[0]
+            n_timesteps = X.shape[-2]
+            n_features = X.shape[-1]
+            n = n_timesteps * n_features
+            
+            maskt = torch.randint(low=0, high=n_timesteps, size=(int(n * mask_p),))
+            maskf = torch.randint(low=0, high=n_features, size=(int(n * mask_p),))
+            mask_idx = n_features * maskt + maskf
+
+            inputs_masked_flattened = X.reshape(n_batches, -1)
+            inputs_masked_flattened = inputs_masked_flattened * 1/(1-mask_p)
+            inputs_masked_flattened[:, mask_idx] = args["speckled_masking_value"]
+            X = inputs_masked_flattened.reshape((n_batches, n_timesteps, n_features))
 
         # Noise augmentation is faster on GPU
         if args["whiteNoiseSD"] > 0:
@@ -188,13 +191,16 @@ def trainModel(args):
         # Backpropagation
         optimizer.zero_grad()
         loss.backward()
+        if args['clipGrad'] > 0.0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args['clipGrad'])
         optimizer.step()
         scheduler.step()
-
+        
         # print(endTime - startTime)
 
         # Eval
         if batch % 100 == 0:
+            # print('learning rate: {:.6f}'.format(scheduler.get_last_lr()[0]))
             with torch.no_grad():
                 # get train batch CER
                 adjustedLens = ((X_len - model.kernelLen) / model.strideLen).to(
@@ -271,60 +277,28 @@ def trainModel(args):
                 cer = total_edit_distance / total_seq_length
 
                 endTime = time.time()
-                
                 print(
-                    f"batch {batch/100}, ctc loss: {avgDayLoss:>7f}, train_cer: {train_cer:>7f}, test_cer: {cer:>7f}, time/batch: {(endTime - startTime)/100:>7.3f}"
+                    f"batch {batch}, train ctc loss: {loss:>7f}, test ctc loss: {avgDayLoss:>7f}, train_cer: {train_cer:>7f}, test cer: {cer:>7f}, time/batch: {(endTime - startTime)/100:>7.3f}"
                 )
-                train_loss = avgDayLoss
-                train_CER = train_cer
-                raw_CER = cer
-                
-                if train_loss < best_train_loss:
-                    best_train_loss = train_loss
-                    best_batch = batch / 100
-                
-                if train_CER < best_train_CER:
-                    best_train_CER = train_CER
-                    best_batch = batch / 100                
-                
                 startTime = time.time()
-                wandb.log(
-                    {
-                        "Training Loss": train_loss,
-                        "Training CER": train_CER,
-                        "Test CER": raw_CER,
-                        "Batch": batch / 100,
-                        "time/batch": (endTime - startTime)/100,
-                        # "Learning rate count": lr_count,
-                        # "Opt acc": opt_acc,
-                        # "lr": state.opt_state.inner_states['regular'].inner_state.hyperparams['learning_rate'],
-                        # "ssm_lr": state.opt_state.inner_states['ssm'].inner_state.hyperparams['learning_rate']
-                    }
-                )
-                wandb.run.summary["Training Loss"] = train_loss
-                wandb.run.summary["Training CER"] = train_CER
-                wandb.run.summary["Best Batch"] = best_batch
-                wandb.run.summary["Best Training Loss"] = best_train_loss
-                wandb.run.summary["Best Training CER"] = best_train_CER    
 
             if len(testCER) > 0 and cer < np.min(testCER):
                 torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
-                early_end = 0
-            else:
-                early_end = early_end + 1
+
+            trainLoss.append(loss.cpu())
+            trainCER.append(train_cer)
             testLoss.append(avgDayLoss)
             testCER.append(cer)
 
             tStats = {}
+            tStats["trainLoss"] = np.array(trainLoss)
+            tStats["trainCER"] = np.array(trainCER)
             tStats["testLoss"] = np.array(testLoss)
             tStats["testCER"] = np.array(testCER)
 
             with open(args["outputDir"] + "/trainingStats", "wb") as file:
                 pickle.dump(tStats, file)
 
-            # Make this a hyperparameter in the future
-            if early_end > 15:
-                break
 
 def loadModel(modelDir, nInputLayers=24, device="cuda"):
     modelWeightPath = modelDir + "/modelWeights"

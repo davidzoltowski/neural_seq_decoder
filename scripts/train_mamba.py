@@ -1,49 +1,89 @@
-import re
 
-def train(args):
+# modelName = 'Mamba_Run2_speckled_masking_standardized_v2'
+# modelName = 'Mamba_Run2_speckled_masking_standardized_v3'
+# modelName = 'Mamba_Run2_speckled_masking_standardized_v4'
+# modelName = 'Mamba_Run2_speckled_masking_layerNorm_standardized_v5'
+# modelName = 'Mamba_Run2_speckled_masking_layerNorm_standardized_bidirectional'
+modelName = 'Mamba_Run2_speckled_masking_layerNorm_standardized_bidirectional_6layers'
+# modelName = 'Mamba_Run2_speckled_masking_normalized'
+# modelName = 'Mamba_Run2_normalized_without_speckled_masking'
+# modelName = 'Mamba_Run2_normalized_without_speckled_masking_addCERLoss'
 
-    new_args = {}
+args = {}
 
-    def extract_numbers(s):
-        # Use regular expressions to find all substrings that are numbers
-        numbers = re.findall(r'\d+', s)  # '\d+' matches sequences of digits
-        # Convert these number strings to integers
-        return [int(num) for num in numbers]
+args['outputDir'] = '/scratch/users/hdlee/speech_bci/logs/' + modelName
+args['datasetPath'] = '/scratch/users/hdlee/speech_bci/competitionData/ptDecoder_ctc'
+# args['datasetPath'] = '/scratch/users/hdlee/speech_bci/competitionData/ptDecoder_ctc_normalized'
 
-    new_args['USE_WANDB'] = args.USE_WANDB
-    new_args['wandb_entity'] = args.wandb_entity
-    new_args['wandb_project'] = args.wandb_project
-    new_args['USE_WANDB'] = args.USE_WANDB
-    new_args['outputDir'] = args.outputDir
-    new_args['datasetPath'] = args.datasetPath
-    new_args['seqLen'] = args.seqLen
-    new_args['maxTimeSeriesLen'] = args.maxTimeSeriesLen
-    new_args['batchSize'] = args.batchSize
-    new_args['lrStart'] = args.lrStart #0.02
-    new_args['lrEnd'] = args.lrStart #args.lrEnd #0.02
-    new_args['nUnits'] = args.nUnits
-    new_args['nBatch'] = args.nBatch #3000
-    new_args['nLayers'] = args.nLayers
-    new_args['seed'] = args.seed # 0 
-    new_args['nClasses'] = args.nClasses
-    new_args['nInputFeatures'] = args.nInputFeatures
-    new_args['dropout'] = args.dropout
-    new_args['whiteNoiseSD'] = args.whiteNoiseSD
-    new_args['constantOffsetSD'] = args.constantOffsetSD
-    new_args['gaussianSmoothWidth'] = args.gaussianSmoothWidth
-    new_args['strideLen'] = extract_numbers(args.strideLen)[0] # 4
-    new_args['kernelLen'] = extract_numbers(args.strideLen)[1] #args.kernelLen # 32
-    new_args['bidirectional'] = args.bidirectional
-    new_args['l2_decay'] = args.l2_decay
-    new_args["d_model"] = args.d_model # 256
-    new_args["d_state"] = args.d_state
-    new_args["d_conv"] = args.d_conv
-    new_args["expand_factor"] = args.expand_factor # 4
-    new_args['adamBeta2'] =args.adamBeta2 # could try 0.95
-    new_args['nWarmup'] = args.nWarmup
-    new_args['cosineAnneal'] = args.cosineAnneal
-    new_args['lrMin'] = args.lrMin # min for cosine annealing
+# args['seqLen'] = 150
+# args['maxTimeSeriesLen'] = 1200
+# args['batchSize'] = 64
+# args['lrStart'] = 1e-2 #0.02
+# args['lrEnd'] = 1e-2 #0.02
+# args['nUnits'] = 1024
+# args['nBatch'] = 20000 #3000
+# args['nLayers'] = 2
+# args['seed'] = 15 # 0 
+# args['nClasses'] = 40
+# args['nInputFeatures'] = 256
+# args['dropout'] = 0.4
+# args['whiteNoiseSD'] = 0.8
+# args['constantOffsetSD'] = 0.2
+# args['gaussianSmoothWidth'] = 0.0
+# args['strideLen'] = 1 # 4
+# args['kernelLen'] = 1 # 32
+# args['bidirectional'] = True
+# args['l2_decay'] = 1e-5
+# args["d_model"] = 1024 # 256
+# args["d_state"] = 16
+# args["d_conv"] = 4
+# args["expand_factor"] = 1 # 4
+# args['adamBeta2'] = 0.999 # could try 0.95
+# args['nWarmup'] = 1
+# args['cosine_anneal'] = True
+# args['lrMin'] = 1e-6 # min for cosine annealing
 
-    from neural_decoder.neural_decoder_trainer_mamba import trainModel
+# from neural_decoder.neural_decoder_trainer_mamba import trainModel
 
-    trainModel(new_args)
+# trainModel(args)
+
+args['seqLen'] = 150
+args['maxTimeSeriesLen'] = 1200
+args['batchSize'] = 64
+args['lrStart'] = 1e-2 #0.02
+args['lrEnd'] = 1e-2 #1e-2 #0.02
+args['nUnits'] = 1024
+args['nBatch'] = 50000 # 20000
+args['nLayers'] = 2 #6 #1
+args['seed'] = 15 # 0
+args['nClasses'] = 40
+args['nInputFeatures'] = 256
+args['dropout'] = 0.0 #0.4
+
+args['whiteNoiseSD'] = 0.8
+args['constantOffsetSD'] = 0.2
+# args['whiteNoiseSD'] = 0.0 
+# args['constantOffsetSD'] = 0.0 
+
+args['gaussianSmoothWidth'] = 0.0
+args['strideLen'] = 1 # 4
+args['kernelLen'] = 1 # 32
+args['bidirectional_input'] = False
+args['bidirectional'] = True
+args['l2_decay'] = 1e-5 # orig = 1e-5
+args["d_model"] = 1024
+args["d_state"] = 16
+args["d_conv"] = 4
+args["expand_factor"] = 1 # 4
+args['adamBeta2'] = 0.99
+args['adamEPS'] = 1e-1
+args['nWarmup'] = 1 # no warmup
+args['cosine_anneal'] = False # constant lr
+args['lrMin'] = 1e-6 # min for cosine annealing
+args['clipGrad'] = 5.0 #1e2 # gradient clipping
+args["speckled_masking_value"] = 0.0
+args['speckled_mask_p'] = 0.3 #0.1 #0.05 #0.15 #0.35
+
+from neural_decoder.neural_decoder_trainer_mamba import trainModel
+
+trainModel(args)

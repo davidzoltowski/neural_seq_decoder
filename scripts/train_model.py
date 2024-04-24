@@ -2,8 +2,8 @@
 modelName = 'speechBaseline4_run3'
 
 args = {}
-args['outputDir'] = '/scratch/users/mkounga/SpeechBCI/logs/' + modelName
-args['datasetPath'] = '/scratch/users/mkounga/SpeechBCI/competitionData/ptDecoder_ctc'
+args['outputDir'] = '/scratch/users/dzoltow/SpeechBCI/logs/' + modelName
+args['datasetPath'] = '/scratch/users/dzoltow/SpeechBCI/competitionData/ptDecoder_ctc'
 args['seqLen'] = 150
 args['maxTimeSeriesLen'] = 1200
 args['batchSize'] = 64
@@ -19,8 +19,8 @@ args['dropout'] = 0.4
 args['whiteNoiseSD'] = 0.8
 args['constantOffsetSD'] = 0.2
 args['gaussianSmoothWidth'] = 2.0
-args['strideLen'] = 1
-args['kernelLen'] = 1
+args['strideLen'] = 4
+args['kernelLen'] = 32
 args['bidirectional'] = True
 args['l2_decay'] = 1e-5
 

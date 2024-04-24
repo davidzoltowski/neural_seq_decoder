@@ -26,7 +26,7 @@ def phoneToId(p):
     return PHONE_DEF_SIL.index(p)
 import scipy
 
-def loadFeaturesAndNormalize(sessionPath):
+def loadFeaturesAndNormalize(sessionPath, standardize=True, normalize=False):
     
     dat = scipy.io.loadmat(sessionPath)
 
@@ -61,10 +61,17 @@ def loadFeaturesAndNormalize(sessionPath):
 
     for b in range(len(blocks)):
         feats = np.concatenate(input_features[blocks[b][0]:(blocks[b][-1]+1)], axis=0)
-        feats_mean = np.mean(feats, axis=0, keepdims=True)
-        feats_std = np.std(feats, axis=0, keepdims=True)
         for i in blocks[b]:
-            input_features[i] = (input_features[i] - feats_mean) / (feats_std + 1e-8)
+            if standardize:
+                feats_mean = np.mean(feats, axis=0, keepdims=True)
+                feats_std = np.std(feats, axis=0, keepdims=True)
+                input_features[i] = (input_features[i] - feats_mean) / (feats_std + 1e-8)
+            elif normalize:
+                feats_max = np.max(feats, axis=0, keepdims=True)
+                feats_min = np.min(feats, axis=0, keepdims=True)
+                # if b == 0 and i == 0:
+                #     print(input_features[i].shape)
+                input_features[i] = (input_features[i] - feats_min) / (feats_max - feats_min)
 
     #convert to tfRecord file
     session_data = {
@@ -74,10 +81,11 @@ def loadFeaturesAndNormalize(sessionPath):
     }
 
     return session_data
+
 import os
 
 def getDataset(fileName):
-    session_data = loadFeaturesAndNormalize(fileName)
+    session_data = loadFeaturesAndNormalize(fileName, standardize=False, normalize=True)
         
     allDat = []
     trueSentences = []
@@ -127,11 +135,13 @@ def getDataset(fileName):
     newDataset['phoneLens'] = np.array(phoneLens)
     newDataset['phonePerTime'] = newDataset['phoneLens'].astype(np.float32) / newDataset['timeSeriesLens'].astype(np.float32)
     return newDataset
+
+
 trainDatasets = []
 testDatasets = []
 competitionDatasets = []
 
-dataDir = '/scratch/users/dzoltow/SpeechBCI/competitionData'
+dataDir = '/scratch/users/hdlee/speech_bci/competitionData'
 
 for dayIdx in range(len(sessionNames)):
     print(dayIdx)
@@ -145,7 +155,7 @@ for dayIdx in range(len(sessionNames)):
         dataset = getDataset(dataDir + '/competitionHoldOut/' + sessionNames[dayIdx] + '.mat')
         competitionDatasets.append(dataset)
 
-dataDir = '/scratch/users/dzoltow/SpeechBCI/competitionData'
+dataDir = '/scratch/users/hdlee/speech_bci/competitionData/competitionData'
 
 competitionDays = []
 for dayIdx in range(len(sessionNames)):
@@ -160,6 +170,5 @@ allDatasets['train'] = trainDatasets
 allDatasets['test'] = testDatasets
 allDatasets['competition'] = competitionDatasets
 
-with open('/scratch/users/dzoltow/SpeechBCI/competitionData/ptDecoder_ctc', 'wb') as handle:
+with open('/scratch/users/hdlee/speech_bci/competitionData/ptDecoder_ctc_normalized', 'wb') as handle:
     pickle.dump(allDatasets, handle)
-
