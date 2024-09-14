@@ -1,6 +1,7 @@
 import os
 import pickle
 import time
+import random
 
 from edit_distance import SequenceMatcher
 import hydra
@@ -11,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from .model import GRUDecoder, MambaDecoder
 from .dataset import SpeechDataset
-
+from neural_decoder.sparse_image_warp import time_warp
 
 def getDatasetLoaders(
     datasetName,
@@ -59,6 +60,7 @@ def trainModel(args):
     os.makedirs(args["outputDir"], exist_ok=True)
     torch.manual_seed(args["seed"])
     np.random.seed(args["seed"])
+    random.seed(args["seed"])
     device = "cuda"
 
     with open(args["outputDir"] + "/args", "wb") as file:
@@ -88,6 +90,10 @@ def trainModel(args):
         bidirectional=args["bidirectional"],
     ).to(device)
 
+    if args['modelWeightPath'] != '':
+        print('loading model weight')
+        model.load_state_dict(torch.load(args['modelWeightPath'], map_location=device))
+
     loss_ctc = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -96,13 +102,17 @@ def trainModel(args):
         eps=args['adamEPS'],
         weight_decay=args["l2_decay"],
     )
-    scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1.0,
-        end_factor=args["lrEnd"] / args["lrStart"],
-        total_iters=1000, #args["nBatch"],
-    )
 
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 
+                                                step_size=args['step_batch'], 
+                                                gamma=args['step_gamma'])
+    
+    # scheduler = torch.optim.lr_scheduler.LinearLR(
+    #     optimizer,
+    #     start_factor=1.0,
+    #     end_factor=args["lrEnd"] / args["lrStart"],
+    #     total_iters=1000, #args["nBatch"],
+    # )
     # # warmup learning rate for nWarmup iters (min = 1)
     # scheduler1 = torch.optim.lr_scheduler.LinearLR(
     #     optimizer,
@@ -149,6 +159,45 @@ def trainModel(args):
             dayIdx.to(device),
         )
 
+        if args["time_warp_W"] > 0:
+            if batch == 0:
+                print(f'using time warping...')
+            time_warp_W = args["time_warp_W"]
+            batch_size = X.shape[0]
+            n_timesteps = X.shape[-2]
+            n_features = X.shape[-1]
+
+            warped = []
+            for l in range(batch_size):
+                try:
+                    warped.append(time_warp(X[l].T, W=time_warp_W).T.unsqueeze(0))
+                except:
+                    warped.append(X[l].unsqueeze(0))
+            X = torch.cat(warped)
+
+        if args["feature_mask_n"] > 0:
+            n_features = X.shape[-1]
+            feature_mask_n = args["feature_mask_n"] if batch < args['step_batch'] else args["step_feature_mask_n"]
+            feature_mask_max_len = args["feature_mask_max_len"] if batch < args['step_batch'] else args["step_feature_mask_max_len"]
+            for l in range(feature_mask_n):
+                feature_mask_max_len_mult = 1 if batch <= 6100 else 4
+                f = random.randrange(1, feature_mask_max_len)
+                f_zero = random.randrange(0, n_features - f)
+        
+                mask_end = random.randrange(f_zero, f_zero + f)
+                X[:, :, f_zero:mask_end] = args["masking_value"]
+
+        if args["time_mask_n"] > 0:
+            n_timesteps = X.shape[-2]
+            time_mask_n = args["time_mask_n"] if batch < args['step_batch'] else args["step_time_mask_n"]
+            time_mask_max_len = args["time_mask_max_len"] if batch < args['step_batch'] else args["step_time_mask_max_len"]
+            for l in range(time_mask_n):
+                f = random.randrange(1, time_mask_max_len)
+                f_zero = random.randrange(0, n_features - f)
+        
+                mask_end = random.randrange(f_zero, f_zero + f)
+                X[:, f_zero:mask_end] = args["masking_value"]
+
         if args["speckled_mask_p"] > 0:
             if batch == 0:
                 print(f'using speckled masking = {args["speckled_mask_p"]}...')
@@ -163,8 +212,9 @@ def trainModel(args):
             mask_idx = n_features * maskt + maskf
 
             inputs_masked_flattened = X.reshape(n_batches, -1)
-            inputs_masked_flattened = inputs_masked_flattened * 1/(1-mask_p)
-            inputs_masked_flattened[:, mask_idx] = args["speckled_masking_value"]
+            if args["renormalize_masking"]:
+                inputs_masked_flattened = inputs_masked_flattened * 1/(1-mask_p)
+            inputs_masked_flattened[:, mask_idx] = args["masking_value"]
             X = inputs_masked_flattened.reshape((n_batches, n_timesteps, n_features))
 
         # Noise augmentation is faster on GPU
@@ -179,6 +229,12 @@ def trainModel(args):
 
         # Compute prediction error
         pred = model.forward(X, dayIdx)
+        def fast_emit_hook(grad):
+            lam = 0.5
+            grad = grad.clone()
+            grad[:, :, 1:] = grad[:, :, 1:] * (1.0 + lam)
+            return grad
+        pred.register_hook(fast_emit_hook)
 
         loss = loss_ctc(
             torch.permute(pred.log_softmax(2), [1, 0, 2]),
@@ -200,7 +256,7 @@ def trainModel(args):
 
         # Eval
         if batch % 100 == 0:
-            # print('learning rate: {:.6f}'.format(scheduler.get_last_lr()[0]))
+            print('learning rate: {:.6f}'.format(scheduler.get_last_lr()[0]))
             with torch.no_grad():
                 # get train batch CER
                 adjustedLens = ((X_len - model.kernelLen) / model.strideLen).to(
@@ -242,14 +298,14 @@ def trainModel(args):
                     )
 
                     pred = model.forward(X, testDayIdx)
-                    loss = loss_ctc(
+                    eval_loss = loss_ctc(
                         torch.permute(pred.log_softmax(2), [1, 0, 2]),
                         y,
                         ((X_len - model.kernelLen) / model.strideLen).to(torch.int32),
                         y_len,
                     )
-                    loss = torch.sum(loss)
-                    allLoss.append(loss.cpu().detach().numpy())
+                    eval_loss = torch.sum(eval_loss)
+                    allLoss.append(eval_loss.cpu().detach().numpy())
 
                     adjustedLens = ((X_len - model.kernelLen) / model.strideLen).to(
                         torch.int32
@@ -278,17 +334,21 @@ def trainModel(args):
 
                 endTime = time.time()
                 print(
-                    f"batch {batch}, train ctc loss: {loss:>7f}, test ctc loss: {avgDayLoss:>7f}, train_cer: {train_cer:>7f}, test cer: {cer:>7f}, time/batch: {(endTime - startTime)/100:>7.3f}"
+                    f"batch {batch}, train ctc loss: {loss:>7f}, test ctc loss: {avgDayLoss:>7f}, " + \
+                    f"train_cer: {train_cer:>7f}, test cer: {cer:>7f}, time/batch: {(endTime - startTime)/100:>7.3f}"
                 )
                 startTime = time.time()
 
-            if len(testCER) > 0 and cer < np.min(testCER):
-                torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
+            # if len(testCER) > 0 and cer < np.min(testCER):
+            #     torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
 
-            trainLoss.append(loss.cpu())
+            trainLoss.append(loss.cpu().detach().numpy())
             trainCER.append(train_cer)
             testLoss.append(avgDayLoss)
             testCER.append(cer)
+
+            if avgDayLoss <= np.min(testLoss):# and cer < 0.24 and avgDayLoss < 0.914:
+                torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
 
             tStats = {}
             tStats["trainLoss"] = np.array(trainLoss)
