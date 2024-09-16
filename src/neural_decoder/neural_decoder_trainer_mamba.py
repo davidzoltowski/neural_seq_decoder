@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from .model import GRUDecoder, MambaDecoder
 from .dataset import SpeechDataset
-from neural_decoder.sparse_image_warp import time_warp
+# from neural_decoder.sparse_image_warp import time_warp
 
 def getDatasetLoaders(
     datasetName,
@@ -159,21 +159,21 @@ def trainModel(args):
             dayIdx.to(device),
         )
 
-        if args["time_warp_W"] > 0:
-            if batch == 0:
-                print(f'using time warping...')
-            time_warp_W = args["time_warp_W"]
-            batch_size = X.shape[0]
-            n_timesteps = X.shape[-2]
-            n_features = X.shape[-1]
+        # if args["time_warp_W"] > 0:
+        #     if batch == 0:
+        #         print(f'using time warping...')
+        #     time_warp_W = args["time_warp_W"]
+        #     batch_size = X.shape[0]
+        #     n_timesteps = X.shape[-2]
+        #     n_features = X.shape[-1]
 
-            warped = []
-            for l in range(batch_size):
-                try:
-                    warped.append(time_warp(X[l].T, W=time_warp_W).T.unsqueeze(0))
-                except:
-                    warped.append(X[l].unsqueeze(0))
-            X = torch.cat(warped)
+        #     warped = []
+        #     for l in range(batch_size):
+        #         try:
+        #             warped.append(time_warp(X[l].T, W=time_warp_W).T.unsqueeze(0))
+        #         except:
+        #             warped.append(X[l].unsqueeze(0))
+        #     X = torch.cat(warped)
 
         if args["feature_mask_n"] > 0:
             n_features = X.shape[-1]
