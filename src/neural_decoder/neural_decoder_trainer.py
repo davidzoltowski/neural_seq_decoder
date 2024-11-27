@@ -12,7 +12,6 @@ from torch.utils.data import DataLoader
 from .model import GRUDecoder
 from .dataset import SpeechDataset
 
-
 def getDatasetLoaders(
     datasetName,
     batchSize,
@@ -74,13 +73,14 @@ def trainModel(args):
         n_classes=args["nClasses"],
         hidden_dim=args["nUnits"],
         layer_dim=args["nLayers"],
-        nDays=len(loadedData["train"]),
+        nDays=24,#len(loadedData["train"]),
         dropout=args["dropout"],
         device=device,
         strideLen=args["strideLen"],
         kernelLen=args["kernelLen"],
         gaussianSmoothWidth=args["gaussianSmoothWidth"],
         bidirectional=args["bidirectional"],
+        speckled_mask_p=args['speckled_mask_p'],
     ).to(device)
 
     loss_ctc = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
@@ -97,8 +97,14 @@ def trainModel(args):
         end_factor=args["lrEnd"] / args["lrStart"],
         total_iters=args["nBatch"],
     )
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #     optimizer,
+    #     T_max=args["nBatch"],
+    # )
 
     # --train--
+    trainLoss = []
+    trainCER = []
     testLoss = []
     testCER = []
     startTime = time.time()
@@ -124,8 +130,17 @@ def trainModel(args):
                 * args["constantOffsetSD"]
             )
 
+        # # get random rotation matrix
+        # feat_dim = X.shape[2]
+        # # rand_mat = torch.randn(feat_dim, feat_dim)
+        # # rand_rotation = torch.linalg.qr(rand_mat).Q.to(device)
+        # skew_symmetric_mat = 1e-2*torch.randn(feat_dim,feat_dim)
+        # skew_symmetric_mat = torch.triu(skew_symmetric_mat)
+        # skew_symmetric_mat -= skew_symmetric_mat.clone().T
+        # rand_rotation = torch.linalg.matrix_exp(skew_symmetric_mat).to(device)
+            
         # Compute prediction error
-        pred = model.forward(X, dayIdx)
+        pred, _ = model.forward(X, dayIdx)#, rand_rotation)
 
         loss = loss_ctc(
             torch.permute(pred.log_softmax(2), [1, 0, 2]),
@@ -146,6 +161,32 @@ def trainModel(args):
         # Eval
         if batch % 100 == 0:
             with torch.no_grad():
+                # get train batch CER
+                adjustedLens = ((X_len - model.kernelLen) / model.strideLen).to(
+                    torch.int32
+                )
+                total_edit_distance = 0
+                total_seq_length = 0
+                for iterIdx in range(pred.shape[0]):
+                    decodedSeq = torch.argmax(
+                        torch.tensor(pred[iterIdx, 0 : adjustedLens[iterIdx], :]),
+                        dim=-1,
+                    )  # [num_seq,]
+                    decodedSeq = torch.unique_consecutive(decodedSeq, dim=-1)
+                    decodedSeq = decodedSeq.cpu().detach().numpy()
+                    decodedSeq = np.array([i for i in decodedSeq if i != 0])
+
+                    trueSeq = np.array(
+                        y[iterIdx][0 : y_len[iterIdx]].cpu().detach()
+                    )
+
+                    matcher = SequenceMatcher(
+                        a=trueSeq.tolist(), b=decodedSeq.tolist()
+                    )
+                    total_edit_distance += matcher.distance()
+                    total_seq_length += len(trueSeq)
+                train_cer = total_edit_distance / total_seq_length
+              
                 model.eval()
                 allLoss = []
                 total_edit_distance = 0
@@ -159,15 +200,15 @@ def trainModel(args):
                         testDayIdx.to(device),
                     )
 
-                    pred = model.forward(X, testDayIdx)
-                    loss = loss_ctc(
+                    pred, _ = model.forward(X, testDayIdx)
+                    eval_loss = loss_ctc(
                         torch.permute(pred.log_softmax(2), [1, 0, 2]),
                         y,
                         ((X_len - model.kernelLen) / model.strideLen).to(torch.int32),
                         y_len,
                     )
-                    loss = torch.sum(loss)
-                    allLoss.append(loss.cpu().detach().numpy())
+                    eval_loss = torch.sum(eval_loss)
+                    allLoss.append(eval_loss.cpu().detach().numpy())
 
                     adjustedLens = ((X_len - model.kernelLen) / model.strideLen).to(
                         torch.int32
@@ -196,16 +237,20 @@ def trainModel(args):
 
                 endTime = time.time()
                 print(
-                    f"batch {batch}, ctc loss: {avgDayLoss:>7f}, cer: {cer:>7f}, time/batch: {(endTime - startTime)/100:>7.3f}"
+                    f"batch {batch}, train ctc loss: {loss:>7f}, test ctc loss: {avgDayLoss:>7f}, train_cer: {train_cer:>7f}, test cer: {cer:>7f}, time/batch: {(endTime - startTime)/100:>7.3f}"
                 )
                 startTime = time.time()
 
             if len(testCER) > 0 and cer < np.min(testCER):
                 torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
+            trainLoss.append(loss.cpu().detach().numpy())
+            trainCER.append(train_cer)
             testLoss.append(avgDayLoss)
             testCER.append(cer)
 
             tStats = {}
+            tStats["trainLoss"] = np.array(trainLoss)
+            tStats["trainCER"] = np.array(trainCER)
             tStats["testLoss"] = np.array(testLoss)
             tStats["testCER"] = np.array(testCER)
 

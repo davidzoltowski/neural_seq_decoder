@@ -3,11 +3,18 @@ from torch.utils.data import Dataset
 
 
 class SpeechDataset(Dataset):
-    def __init__(self, data, transform=None):
+    def __init__(self, data, transform=None, current_session_id=-1, day_idx=0):
         self.data = data
         self.transform = transform
-        self.n_days = len(data)
-        self.n_trials = sum([len(d["sentenceDat"]) for d in data])
+        if current_session_id >= 0:
+            self.n_days = current_session_id+1
+            n_trials = []
+            for d in range(self.n_days):
+                n_trials.append(len(data[d]["sentenceDat"]))
+            self.n_trials = sum(n_trials)
+        else:
+            self.n_days = len(data)
+            self.n_trials = sum([len(d["sentenceDat"]) for d in data])
 
         self.neural_feats = []
         self.phone_seqs = []
@@ -20,7 +27,7 @@ class SpeechDataset(Dataset):
                 self.phone_seqs.append(data[day]["phonemes"][trial])
                 self.neural_time_bins.append(data[day]["sentenceDat"][trial].shape[0])
                 self.phone_seq_lens.append(data[day]["phoneLens"][trial])
-                self.days.append(day)
+                self.days.append(day_idx + day)
 
     def __len__(self):
         return self.n_trials
